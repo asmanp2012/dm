@@ -1,0 +1,448 @@
+#!/bin/bash
+
+VERSION="2.2"
+
+ORIGINAL_DIR="$PWD"
+
+cleanup() { cd "$ORIGINAL_DIR"; }
+trap cleanup EXIT
+
+_resolve_path() {
+    local path="$1"
+    if [[ "$path" != /* ]]; then
+        echo "$ORIGINAL_DIR/$path"
+    else
+        echo "$path"
+    fi
+}
+
+# دستورات اصلی
+lsdc() { sudo docker ps -la; }
+lsnet() { sudo docker ps --format '{{ .ID }} {{ .Names }} {{ json .Networks }}'; }
+lsi() { sudo docker images; }
+lsn() { docker network ls; }
+rmi() { sudo docker image rm "$1"; }
+renameimg() { sudo docker image tag "$1" "$2"; }
+sshc() { docker exec -it "$1" bash; }
+rmc() { sudo docker rm "$1"; }
+dmStop() { sudo docker stop "$1"; }
+dmStart() { sudo docker start "$1"; }
+dmClean() { 
+    echo "🧹 Cleaning container: $1"
+    docker exec "$1" sh -c "rm -rf /tmp/* /var/tmp/* /var/log/*.log 2>/dev/null; 
+                            apt-get clean 2>/dev/null || yum clean all 2>/dev/null || true;
+                            find /var/cache -type f -delete 2>/dev/null;
+                            echo '✅ Cleanup completed'" 
+}
+
+# دستورات جدید
+commitc() { sudo docker commit "$1" "$2"; }
+saveimg() { 
+    local image="$1"
+    local output_file="$(_resolve_path "$2")"
+    echo "Saving $image to $output_file"
+    sudo docker save "$image" > "$output_file"
+}
+loadimg() {
+    local input_file="$(_resolve_path "$1")"
+    
+    if [ ! -f "$input_file" ]; then
+        echo "Error: File not found: $input_file"
+        return 1
+    fi
+    
+    echo "Loading image from $input_file"
+    sudo docker load < "$input_file"
+}
+
+exportc() {
+    local container="$1"
+    local output_file="$(_resolve_path "${2:-${container}-exported.tar}")"
+    
+    echo "📤 Exporting container: $container"
+    echo "💾 Output: $output_file"
+    
+    sudo docker export "$container" > "$output_file"
+    
+    if [ $? -eq 0 ]; then
+        local size=$(stat -c%s "$output_file" 2>/dev/null || echo "unknown")
+        echo "✅ Exported successfully! ($((size/1024/1024))MB)"
+    else
+        echo "❌ Export failed!"
+    fi
+}
+
+importimg() {
+    local input_file="$(_resolve_path "$1")"
+    local image_name="${2:-imported-$(date +%s)}"
+    
+    if [ ! -f "$input_file" ]; then
+        echo "❌ Error: File not found: $input_file"
+        return 1
+    fi
+    
+    echo "📥 Importing: $input_file"
+    echo "🏷️  Image name: $image_name"
+    
+    # نمایش progress اگر pv نصب باشه
+    if command -v pv >/dev/null 2>&1; then
+        echo "⚡ Using fast import with progress..."
+        pv "$input_file" | sudo docker import - "$image_name"
+    else
+        sudo docker import "$input_file" "$image_name"
+    fi
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Imported as: $image_name"
+        echo "💡 Note: Imported images need CMD specified when running"
+        echo "💡 Example: dm run myapp \"8080:80\" $image_name \"/usr/bin/supervisord -n\""
+    else
+        echo "❌ Import failed!"
+    fi
+}
+
+runimg() { 
+    local name="$1"
+    local ports="$2"
+    local image="$3"
+    local cmd="${4:-/usr/bin/supervisord -n}"  # default CMD
+    
+    local port_args=""
+    for port_pair in $ports; do
+        port_args="$port_args -p $port_pair"
+    done
+    
+    echo "🚀 Starting: $name"
+    echo "📦 Image: $image"
+    echo "🔗 Ports:"
+    echo $port_args
+    echo "⚙️  CMD: $cmd"
+    
+    sudo docker run --restart=always --name "$name" $port_args -d "$image" $cmd
+}
+
+
+show_help() {
+    cat << EOF
+Docker Manager v$VERSION
+=================================
+Usage:
+  dm [COMMAND] [OPTIONS]
+  dm --menu              Interactive menu
+  dm --help              Show this help
+  dm --version           Show version
+
+Basic Commands:
+  lsdc                  List all containers
+  lsnet                 List containers with networks
+  lsi                   List all images
+  lsn                   List Docker networks
+  rmi IMAGE             Remove image
+  renameimg OLD NEW     Rename image
+  sshc CONTAINER        Bash into container
+  rmc CONTAINER         Remove container
+  stop CONTAINER        Stop container
+  start CONTAINER       Start container
+  clean CONTAINER       Clean temp files, logs, and cache
+
+Image Operations:
+  commit CONTAINER IMAGE      Create image from container
+  save IMAGE FILE             Save image to tar file (with layers)
+  load FILE                   Load image from tar file (with layers)
+  export CONTAINER [FILE]     Export container filesystem to tar
+  import FILE [IMAGE]         Import tar to image (single layer)
+
+Container Operations:
+  run NAME PORTS IMAGE [CMD]  Run container (default CMD: /usr/bin/supervisord -n)
+
+Docker Commands:
+  ps [OPTIONS]          Run docker ps
+  images [OPTIONS]      Run docker images
+
+Menu:
+  menu                  Interactive menu
+
+Examples:
+  dm lsdc
+  dm sshc my-container
+  dm rmi nginx:latest
+  dm commit my-container my-image:latest
+  dm save my-image:latest my-image.tar
+  dm load my-image.tar
+  dm export my-container
+  dm import my-exported.tar my-image:new
+  dm run my-app "8080:80" my-image:latest
+  dm ps -a
+  dm --menu
+EOF
+}
+
+show_menu() {
+    while true; do
+        clear
+        echo "Docker Manager Menu v$VERSION"
+        echo "================================"
+        echo "1.  List containers (lsdc)"
+        echo "2.  List containers with networks (lsnet)"
+        echo "3.  List images (lsi)"
+        echo "4.  List networks (lsn)"
+        echo "5.  Remove image (rmi)"
+        echo "6.  Rename image (renameimg)"
+        echo "7.  Shell into container (sshc)"
+        echo "8.  Remove container (rmc)"
+        echo "9.  Stop container (stop)"
+        echo "10. Start container (start)"
+        echo "11. Clean container (clean)"
+        echo "12. Export container (export)"
+        echo "13. Import from tar to image (import)"
+        echo "14. Create image from container (commit)"
+        echo "15. Save image to file (save)"
+        echo "16. Load image from file (load)"
+        echo "17. Run container with auto-restart (run)"
+        echo "18. Custom docker ps"
+        echo "19. Custom docker images"
+        echo "20. Show help"
+        echo "0.  Exit"
+        echo ""
+        read -p "Select option [0-20]: " choice
+        
+        case $choice in
+            1) lsdc ;;
+            2) lsnet ;;
+            3) lsi ;;
+            4) lsn ;;
+            5)
+                read -p "Enter image name/ID to remove: " img
+                [ -n "$img" ] && rmi "$img"
+                ;;
+            6)
+                read -p "Enter old image name: " old_img
+                read -p "Enter new image name: " new_img
+                [ -n "$old_img" ] && [ -n "$new_img" ] && renameimg "$old_img" "$new_img"
+                ;;
+            7)
+                read -p "Enter container name/ID: " container
+                [ -n "$container" ] && sshc "$container"
+                ;;
+            8)
+                read -p "Enter container name/ID to remove: " container
+                [ -n "$container" ] && rmc "$container"
+                ;;
+            9)
+                read -p "Enter container name/ID to stop: " container
+                [ -n "$container" ] && dmStop "$container"
+                ;;
+            10)
+                read -p "Enter container name/ID to start: " container
+                [ -n "$container" ] && dmStart "$container"
+                ;;
+            11)
+                read -p "Enter container name/ID to clean: " container
+                [ -n "$container" ] && dmClean "$container"
+                ;;
+            12)
+                read -p "Enter container to export: " container
+                read -p "Output file [${container}-exported.tar]: " output
+                exportc "$container" "$output"
+                ;;
+            13)
+                read -p "Enter tar file to import: " tar_file
+                read -p "Image name [imported-$(date +%s)]: " image_name
+                importimg "$tar_file" "$image_name"
+                ;;
+            14)
+                read -p "Enter container ID: " container_id
+                read -p "Enter new image name (name:tag): " image_name
+                [ -n "$container_id" ] && [ -n "$image_name" ] && commitc "$container_id" "$image_name"
+                ;;
+            15)
+                read -p "Enter image name (name:tag): " image_name
+                read -p "Enter output file name: " output_file
+                [ -n "$image_name" ] && [ -n "$output_file" ] && saveimg "$image_name" "$output_file"
+                ;;
+            16)
+                read -p "Enter tar file to load: " tar_file
+                [ -n "$tar_file" ] && loadimg "$tar_file"
+                ;;
+            17)
+                read -p "Enter container name: " container_name
+                read -p "Enter port mapping (e.g., 222:22 8081:80): " ports
+                read -p "Enter image name: " image_name
+                read -p "CMD [/usr/bin/supervisord -n]: " cmd
+                [ -n "$container_name" ] && [ -n "$ports" ] && [ -n "$image_name" ] && \
+                runimg "$container_name" "$ports" "$image_name" "$cmd"
+                ;;
+            18)
+                read -p "Enter docker ps options: " opts
+                docker ps $opts
+                ;;
+            19)
+                read -p "Enter docker images options: " opts
+                docker images $opts
+                ;;
+            20) show_help ;;
+            0)
+                echo "👋 Exiting..."
+                exit 0
+                ;;
+            *)
+                echo "❌ Invalid option!"
+                ;;
+        esac
+        
+        echo ""
+        read -p "Press Enter to continue..."
+    done
+}
+
+case "$1" in
+    --help|-h)
+        show_help
+        ;;
+    --menu|-m|menu)
+        show_menu
+        ;;
+    --version|-v)
+        echo "dm v$VERSION"
+        ;;
+    lsdc)
+        shift
+        docker ps -la "$@"
+        ;;
+    lsnet)
+        shift
+        docker ps --format '{{ .ID }} {{ .Names }} {{ json .Networks }}' "$@"
+        ;;
+    lsi)
+        shift
+        docker images "$@"
+        ;;
+    lsn)
+        shift
+        docker network ls "$@"
+        ;;
+    rmi)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Image name/ID required!"
+            echo "💡 Usage: dm rmi IMAGE_NAME_OR_ID"
+            exit 1
+        fi
+        rmi "$2"
+        ;;
+    renameimg)
+        if [ -z "$2" ] || [ -z "$3" ]; then
+            echo "❌ Error: Both old and new image names required!"
+            echo "💡 Usage: dm renameimg OLD_IMAGE NEW_IMAGE"
+            exit 1
+        fi
+        renameimg "$2" "$3"
+        ;;
+    sshc)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Container name/ID required!"
+            echo "💡 Usage: dm sshc CONTAINER_NAME_OR_ID"
+            exit 1
+        fi
+        sshc "$2"
+        ;;
+    rmc)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Container name/ID required!"
+            echo "💡 Usage: dm rmc CONTAINER_NAME_OR_ID"
+            exit 1
+        fi
+        rmc "$2"
+        ;;
+    stop)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Container name/ID required!"
+            echo "💡 Usage: dm stop CONTAINER_NAME_OR_ID"
+            exit 1
+        fi
+        dmStop "$2"
+        ;;
+    start)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Container name/ID required!"
+            echo "💡 Usage: dm start CONTAINER_NAME_OR_ID"
+            exit 1
+        fi
+        dmStart "$2"
+        ;;
+    clean)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Container name/ID required!"
+            echo "💡 Usage: dm clean CONTAINER_NAME_OR_ID"
+            exit 1
+        fi
+        dmClean "$2"
+        ;;
+    commit)
+        if [ -z "$2" ] || [ -z "$3" ]; then
+            echo "❌ Error: Container ID and image name required!"
+            echo "💡 Usage: dm commit CONTAINER_ID IMAGE_NAME:TAG"
+            exit 1
+        fi
+        commitc "$2" "$3"
+        ;;
+    save)
+        if [ -z "$2" ] || [ -z "$3" ]; then
+            echo "❌ Error: Image name and output file required!"
+            echo "💡 Usage: dm save IMAGE_NAME:TAG OUTPUT_FILE.tar"
+            exit 1
+        fi
+        saveimg "$2" "$3"
+        ;;
+    load)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Tar file required!"
+            echo "💡 Usage: dm load FILE.tar"
+            exit 1
+        fi
+        loadimg "$2"
+        ;;
+    export)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Container name required!"
+            echo "💡 Usage: dm export CONTAINER [OUTPUT_FILE.tar]"
+            exit 1
+        fi
+        exportc "$2" "$3"
+        ;;
+    import)
+        if [ -z "$2" ]; then
+            echo "❌ Error: Tar file required!"
+            echo "💡 Usage: dm import FILE.tar [IMAGE_NAME:TAG]"
+            echo "📝 Example: dm import hms-service-V0.15.tar hms-service:V0.15"
+            exit 1
+        fi
+        importimg "$2" "$3"
+        ;;
+    run)
+        if [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
+            echo "❌ Error: Container name, ports, and image required!"
+            echo "💡 Usage: dm run CONTAINER_NAME \"PORTS\" IMAGE [CMD]"
+            echo "📝 Example: dm run hms \"222:22 8081:80\" c9310834b81c"
+            echo "📝 Example: dm run hms \"222:22 8081:80\" c9310834b81c \"/usr/bin/supervisord -n\""
+            exit 1
+        fi
+        runimg "$2" "$3" "$4" "$5"
+        ;;
+    ps)
+        shift
+        docker ps "$@"
+        ;;
+    images)
+        shift
+        docker images "$@"
+        ;;
+    "")
+        echo "🐳 Docker Manager v$VERSION"
+        echo "💡 Type 'dm --help' for usage"
+        ;;
+    *)
+        echo "❌ Error: Unknown command '$1'"
+        echo "💡 Use 'dm --help' for available commands"
+        exit 1
+        ;;
+esac
