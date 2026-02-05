@@ -33,7 +33,7 @@ Docker Manager (dm) is a Bash script that simplifies complex Docker commands. Th
 
 ## 📦 Installation
 
-### Step1: Cloning```bash
+### Step1: Cloning
 
 ```bash
 # Clone the repository
