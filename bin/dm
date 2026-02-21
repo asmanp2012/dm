@@ -17,16 +17,16 @@ _resolve_path() {
 }
 
 # دستورات اصلی
-lsdc() { sudo docker ps -la; }
-lsnet() { sudo docker ps --format '{{ .ID }} {{ .Names }} {{ json .Networks }}'; }
-lsi() { sudo docker images; }
+lsdc() { docker ps -la; }
+lsnet() { docker ps --format '{{ .ID }} {{ .Names }} {{ json .Networks }}'; }
+lsi() { docker images; }
 lsn() { docker network ls; }
-rmi() { sudo docker image rm "$1"; }
-renameimg() { sudo docker image tag "$1" "$2"; }
+rmi() { docker image rm "$1"; }
+renameimg() { docker image tag "$1" "$2"; }
 sshc() { docker exec -it "$1" bash; }
-rmc() { sudo docker rm "$1"; }
-dmStop() { sudo docker stop "$1"; }
-dmStart() { sudo docker start "$1"; }
+rmc() { docker rm "$1"; }
+dmStop() { docker stop "$1"; }
+dmStart() { docker start "$1"; }
 dmClean() { 
     echo "🧹 Cleaning container: $1"
     docker exec "$1" sh -c "rm -rf /tmp/* /var/tmp/* /var/log/*.log 2>/dev/null; 
@@ -36,12 +36,12 @@ dmClean() {
 }
 
 # دستورات جدید
-commitc() { sudo docker commit "$1" "$2"; }
+commitc() { docker commit "$1" "$2"; }
 saveimg() { 
     local image="$1"
     local output_file="$(_resolve_path "$2")"
     echo "Saving $image to $output_file"
-    sudo docker save "$image" > "$output_file"
+    docker save "$image" > "$output_file"
 }
 loadimg() {
     local input_file="$(_resolve_path "$1")"
@@ -52,7 +52,7 @@ loadimg() {
     fi
     
     echo "Loading image from $input_file"
-    sudo docker load < "$input_file"
+    docker load < "$input_file"
 }
 
 exportc() {
@@ -62,7 +62,7 @@ exportc() {
     echo "📤 Exporting container: $container"
     echo "💾 Output: $output_file"
     
-    sudo docker export "$container" > "$output_file"
+    docker export "$container" > "$output_file"
     
     if [ $? -eq 0 ]; then
         local size=$(stat -c%s "$output_file" 2>/dev/null || echo "unknown")
@@ -87,9 +87,9 @@ importimg() {
     # نمایش progress اگر pv نصب باشه
     if command -v pv >/dev/null 2>&1; then
         echo "⚡ Using fast import with progress..."
-        pv "$input_file" | sudo docker import - "$image_name"
+        pv "$input_file" | docker import - "$image_name"
     else
-        sudo docker import "$input_file" "$image_name"
+        docker import "$input_file" "$image_name"
     fi
     
     if [ $? -eq 0 ]; then
@@ -118,7 +118,7 @@ runimg() {
     echo $port_args
     echo "⚙️  CMD: $cmd"
     
-    sudo docker run --restart=always --name "$name" $port_args -d "$image" $cmd
+    docker run --restart=always --name "$name" $port_args -d "$image" $cmd
 }
 
 
